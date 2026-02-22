@@ -1,6 +1,7 @@
 """SQLite database operations for IdeaScheduler Bot."""
 
 import os
+import hmac
 import sqlite3
 from datetime import datetime, timedelta
 from contextlib import contextmanager
@@ -228,7 +229,7 @@ def store_oauth_state(user_id: int, state: str) -> None:
 
 
 def verify_oauth_state(user_id: int, state: str) -> bool:
-    """Verify OAuth state matches stored value."""
+    """Verify OAuth state matches stored value (timing-safe comparison)."""
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
@@ -236,7 +237,10 @@ def verify_oauth_state(user_id: int, state: str) -> bool:
             (user_id,)
         )
         row = cursor.fetchone()
-        return row and row['oauth_state'] == state
+        if not row or not row['oauth_state']:
+            return False
+        # Use timing-safe comparison to prevent timing attacks
+        return hmac.compare_digest(row['oauth_state'], state)
 
 
 def store_google_tokens(user_id: int, access_token: str, refresh_token: str,
