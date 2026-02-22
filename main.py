@@ -4,6 +4,7 @@ import os
 import re
 import logging
 from datetime import datetime
+from pathlib import Path
 from dotenv import load_dotenv
 import dateparser
 from telegram import Update
@@ -18,7 +19,9 @@ import db
 import google_calendar
 import oauth
 
-load_dotenv()
+# Load .env from the same directory as this file
+env_path = Path(__file__).parent / '.env'
+load_dotenv(env_path)
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',

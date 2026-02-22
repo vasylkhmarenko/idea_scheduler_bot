@@ -3,15 +3,19 @@
 import os
 import asyncio
 import logging
-from flask import Flask, request
+from pathlib import Path
 from dotenv import load_dotenv
+
+# Load .env BEFORE importing other modules that use env vars
+env_path = Path(__file__).parent / '.env'
+load_dotenv(env_path)
+
+from flask import Flask, request
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
 import db
 import oauth
-
-load_dotenv()
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
