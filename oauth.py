@@ -31,6 +31,8 @@ def generate_oauth_state(user_id: int) -> str:
 
 def parse_oauth_state(state: str) -> tuple[int, str] | None:
     """Parse state string to extract user_id and token."""
+    if not state:
+        return None
     try:
         parts = state.split(':', 1)
         if len(parts) == 2:
