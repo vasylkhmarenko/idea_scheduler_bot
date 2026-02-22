@@ -14,6 +14,10 @@ SCOPES = ['https://www.googleapis.com/auth/calendar']
 CLIENT_SECRETS_FILE = os.getenv('GOOGLE_CLIENT_SECRETS_PATH', 'client_secrets.json')
 REDIRECT_URI = os.getenv('OAUTH_REDIRECT_URI', 'https://vasylkhmarenko.pythonanywhere.com/oauth/callback')
 
+# Cache client credentials at module load to avoid file I/O per request
+_CLIENT_ID = None
+_CLIENT_SECRET = None
+
 
 def generate_oauth_state(user_id: int) -> str:
     """Generate and store a random state for CSRF protection."""
@@ -130,7 +134,11 @@ def get_user_credentials(user_id: int) -> Credentials | None:
 
 
 def _get_client_credentials() -> tuple[str, str]:
-    """Get client ID and secret from secrets file."""
-    with open(CLIENT_SECRETS_FILE) as f:
-        data = json.load(f)
-        return data['web']['client_id'], data['web']['client_secret']
+    """Get client ID and secret from secrets file (cached)."""
+    global _CLIENT_ID, _CLIENT_SECRET
+    if _CLIENT_ID is None:
+        with open(CLIENT_SECRETS_FILE) as f:
+            data = json.load(f)
+            _CLIENT_ID = data['web']['client_id']
+            _CLIENT_SECRET = data['web']['client_secret']
+    return _CLIENT_ID, _CLIENT_SECRET

@@ -46,8 +46,9 @@ def init_db():
 
         conn.commit()
 
-    # Run migrations for OAuth columns
+    # Run migrations
     _migrate_add_oauth_columns()
+    _migrate_add_indexes()
 
 
 def _migrate_add_oauth_columns():
@@ -67,6 +68,28 @@ def _migrate_add_oauth_columns():
             conn.commit()
 
 
+def _migrate_add_indexes():
+    """Add indexes for query performance."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        # Index for pending events queries (user_id + completed)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_events_user_pending
+            ON events(user_id, completed)
+        """)
+        # Index for scheduled time ordering/filtering
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_events_scheduled
+            ON events(scheduled_time)
+        """)
+        # Index for daily reminder queries (completed + scheduled_time)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_events_pending_time
+            ON events(completed, scheduled_time)
+        """)
+        conn.commit()
+
+
 def add_user(user_id: int) -> bool:
     """Store new user. Returns True if new user, False if already exists."""
     with get_connection() as conn:
@@ -80,14 +103,6 @@ def add_user(user_id: int) -> bool:
             return True
         except sqlite3.IntegrityError:
             return False
-
-
-def user_exists(user_id: int) -> bool:
-    """Check if user exists in database."""
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (user_id,))
-        return cursor.fetchone() is not None
 
 
 def store_event(user_id: int, event_id: str, idea: str, scheduled_time: datetime) -> int:
@@ -117,26 +132,6 @@ def get_pending_events(user_id: int) -> list:
             ORDER BY scheduled_time ASC
             """,
             (user_id,)
-        )
-        return [dict(row) for row in cursor.fetchall()]
-
-
-def get_pending_events_for_date(target_date: datetime) -> list:
-    """Get all incomplete events scheduled for a specific date (all users)."""
-    start_of_day = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_of_day = start_of_day + timedelta(days=1)
-
-    with get_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT e.id, e.user_id, e.event_id, e.idea, e.scheduled_time
-            FROM events e
-            WHERE e.completed = 0
-            AND e.scheduled_time >= ? AND e.scheduled_time < ?
-            ORDER BY e.scheduled_time ASC
-            """,
-            (start_of_day, end_of_day)
         )
         return [dict(row) for row in cursor.fetchall()]
 
