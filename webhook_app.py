@@ -1,8 +1,11 @@
 """Flask webhook handler for IdeaScheduler Bot (PythonAnywhere deployment)."""
 
 import os
+import sys
 import asyncio
 import logging
+import secrets
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -10,7 +13,7 @@ from dotenv import load_dotenv
 env_path = Path(__file__).parent / '.env'
 load_dotenv(env_path)
 
-from flask import Flask, request
+from flask import Flask, request, abort
 from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
@@ -23,10 +26,57 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Required environment variables
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET')
+
+# Validate required environment variables on startup
+def _validate_env():
+    """Ensure required environment variables are set."""
+    missing = []
+    if not TELEGRAM_BOT_TOKEN:
+        missing.append('TELEGRAM_BOT_TOKEN')
+    if missing:
+        logger.error(f"Missing required environment variables: {', '.join(missing)}")
+        sys.exit(1)
+    # Generate webhook secret if not set (warn but don't fail)
+    global WEBHOOK_SECRET
+    if not WEBHOOK_SECRET:
+        WEBHOOK_SECRET = secrets.token_hex(32)
+        logger.warning("WEBHOOK_SECRET not set. Generated temporary secret. Set it in .env for production.")
+
+_validate_env()
 
 # Flask app
 app = Flask(__name__)
+
+# Persistent event loop in a background thread (fixes "Event loop is closed" errors)
+_loop = None
+_loop_thread = None
+
+
+def _start_background_loop(loop):
+    """Run the event loop in a background thread."""
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+
+def get_event_loop():
+    """Get or create a persistent event loop running in a background thread."""
+    global _loop, _loop_thread
+    if _loop is None or not _loop.is_running():
+        _loop = asyncio.new_event_loop()
+        _loop_thread = threading.Thread(target=_start_background_loop, args=(_loop,), daemon=True)
+        _loop_thread.start()
+    return _loop
+
+
+def run_async(coro):
+    """Run an async coroutine in the persistent event loop."""
+    loop = get_event_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=30)  # 30 second timeout
+
 
 # Telegram application (initialized lazily)
 telegram_app = None
@@ -78,9 +128,16 @@ async def process_telegram_update(update_data):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming Telegram updates."""
+    # Validate webhook secret token (if configured)
+    if WEBHOOK_SECRET:
+        token = request.headers.get('X-Telegram-Bot-Api-Secret-Token')
+        if not token or not secrets.compare_digest(token, WEBHOOK_SECRET):
+            logger.warning("Webhook request with invalid or missing secret token")
+            abort(403)
+
     try:
         update_data = request.get_json()
-        asyncio.run(process_telegram_update(update_data))
+        run_async(process_telegram_update(update_data))
         return 'OK', 200
     except Exception as e:
         logger.error(f"Error processing update: {e}")
@@ -105,7 +162,7 @@ def oauth_callback():
 
     if success:
         try:
-            asyncio.run(send_connection_success_message(user_id))
+            run_async(send_connection_success_message(user_id))
         except Exception as e:
             logger.error(f"Failed to send Telegram notification: {e}")
 
