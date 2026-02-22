@@ -12,7 +12,7 @@ load_dotenv(env_path)
 
 from flask import Flask, request
 from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 import db
 import oauth
@@ -30,6 +30,7 @@ app = Flask(__name__)
 
 # Telegram application (initialized lazily)
 telegram_app = None
+telegram_app_initialized = False
 
 
 def get_telegram_app():
@@ -37,7 +38,8 @@ def get_telegram_app():
     global telegram_app
     if telegram_app is None:
         from main import (start, help_command, add_idea, pending, stats,
-                          handle_completion, connect_google, disconnect_google)
+                          handle_completion, connect_google, disconnect_google,
+                          handle_voice, handle_text_message)
 
         telegram_app = (
             Application.builder()
@@ -53,20 +55,32 @@ def get_telegram_app():
         telegram_app.add_handler(CommandHandler("pending", pending))
         telegram_app.add_handler(CommandHandler("stats", stats))
         telegram_app.add_handler(CallbackQueryHandler(handle_completion, pattern=r'^complete_\d+$'))
+        telegram_app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+        telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     return telegram_app
+
+
+async def process_telegram_update(update_data):
+    """Process a Telegram update with proper initialization."""
+    global telegram_app_initialized
+    telegram_app = get_telegram_app()
+
+    # Initialize the application if not already done
+    if not telegram_app_initialized:
+        await telegram_app.initialize()
+        telegram_app_initialized = True
+
+    update = Update.de_json(update_data, telegram_app.bot)
+    await telegram_app.process_update(update)
 
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Handle incoming Telegram updates."""
     try:
-        telegram_app = get_telegram_app()
-        update = Update.de_json(request.get_json(), telegram_app.bot)
-
-        # Process update asynchronously
-        asyncio.run(telegram_app.process_update(update))
-
+        update_data = request.get_json()
+        asyncio.run(process_telegram_update(update_data))
         return 'OK', 200
     except Exception as e:
         logger.error(f"Error processing update: {e}")
