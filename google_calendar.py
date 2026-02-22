@@ -12,10 +12,13 @@ def _get_calendar_service(credentials):
     return build('calendar', 'v3', credentials=credentials)
 
 def create_event_for_user(user_id: int, idea: str, datetime_obj: datetime,
-                          timezone: str = None) -> str | None:
+                          timezone: str = None, duration_minutes: int = 60) -> str | None:
     """
     Create Google Calendar event for a specific user using their OAuth credentials.
     Returns event_id or None if user not connected.
+
+    Args:
+        duration_minutes: Event duration in minutes (default: 60, range: 15-480)
     """
     import oauth
     import db
@@ -28,8 +31,11 @@ def create_event_for_user(user_id: int, idea: str, datetime_obj: datetime,
     calendar_id = tokens.get('google_calendar_id') or 'primary'
     timezone = timezone or DEFAULT_TIMEZONE
 
+    # Clamp duration to reasonable range (15 min to 8 hours)
+    duration_minutes = max(15, min(480, duration_minutes))
+
     service = _get_calendar_service(credentials)
-    end_time = datetime_obj + timedelta(hours=1)
+    end_time = datetime_obj + timedelta(minutes=duration_minutes)
 
     event = {
         'summary': idea,

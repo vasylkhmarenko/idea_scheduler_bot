@@ -3,8 +3,9 @@
 import os
 import re
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+import json
 from dotenv import load_dotenv
 import dateparser
 from telegram import Update
@@ -68,6 +69,125 @@ def parse_add_command(text: str) -> tuple[str, str] | None:
                 return (idea, time_str)
 
     return None
+
+
+def looks_like_event(idea: str, original_text: str) -> bool:
+    """Filter out likely non-event messages (casual chat, questions, past tense)."""
+    text = idea.lower()
+    full_text = original_text.lower()
+
+    # Reject questions (ends with ? or starts with question words)
+    if original_text.rstrip().endswith('?'):
+        return False
+    question_starts = ['what ', 'when ', 'where ', 'how ', 'why ', 'who ', 'is ', 'are ', 'do ', 'does ']
+    if any(full_text.startswith(q) for q in question_starts):
+        return False
+
+    # Reject past tense indicators (check with word boundaries)
+    past_indicators = [' was ', ' were ', ' did ', ' had ', ' called ', ' met ', ' went ', ' saw ', ' happened ']
+    text_padded = ' ' + text + ' '  # Add spaces to match at start/end
+    if any(ind in text_padded for ind in past_indicators):
+        return False
+
+    # Reject conversational phrases
+    casual_starts = ["i'll ", "i will ", "how about", "what time", "remember ",
+                     "thanks ", "thank you", "she said", "he said", "they said",
+                     "see you", "nice to"]
+    if any(text.startswith(phrase) for phrase in casual_starts):
+        return False
+
+    # Require meaningful idea (at least 2 words or 8+ chars)
+    words = idea.split()
+    if len(words) < 2 and len(idea) < 8:
+        return False
+
+    return True
+
+
+def parse_time_robust(time_str: str) -> datetime | None:
+    """Parse time string with dateparser, handling edge cases."""
+    settings = {'PREFER_DATES_FROM': 'future'}
+
+    # Try as-is first
+    result = dateparser.parse(time_str, settings=settings)
+    if result:
+        return result
+
+    # Strip 'next' prefix (dateparser bug workaround)
+    cleaned = re.sub(r'^next\s+', '', time_str, flags=re.IGNORECASE)
+    if cleaned != time_str:
+        result = dateparser.parse(cleaned, settings=settings)
+        if result:
+            return result
+
+    return None
+
+
+# Duration options in minutes (synced with Google Calendar)
+DURATION_OPTIONS = [
+    (15, "15 min"),
+    (30, "30 min"),
+    (60, "1 hour"),
+    (120, "2 hours"),
+]
+
+
+def get_future_time_suggestions(parsed_time: datetime, time_str: str) -> list[tuple[datetime, str]]:
+    """
+    When parsed time is in the past, suggest nearest future alternatives.
+    Returns list of (datetime, label) tuples.
+    """
+    now = datetime.now()
+    suggestions = []
+
+    # Get the time component
+    time_of_day = parsed_time.time()
+
+    # Tomorrow at same time
+    tomorrow = now.replace(hour=time_of_day.hour, minute=time_of_day.minute,
+                           second=0, microsecond=0) + timedelta(days=1)
+    suggestions.append((tomorrow, f"Tomorrow {time_of_day.strftime('%I:%M %p')}"))
+
+    # Day after tomorrow
+    day_after = tomorrow + timedelta(days=1)
+    day_name = day_after.strftime('%A')
+    suggestions.append((day_after, f"{day_name} {time_of_day.strftime('%I:%M %p')}"))
+
+    return suggestions
+
+
+def create_time_suggestion_keyboard(idea: str, suggestions: list[tuple[datetime, str]]) -> InlineKeyboardMarkup:
+    """Create inline keyboard with time suggestions."""
+    buttons = []
+    for dt, label in suggestions:
+        # Store idea and datetime in callback data as JSON
+        data = json.dumps({"a": "time", "i": idea[:50], "t": dt.isoformat()})
+        buttons.append([InlineKeyboardButton(label, callback_data=data)])
+
+    buttons.append([InlineKeyboardButton("Cancel", callback_data='{"a":"cancel"}')])
+    return InlineKeyboardMarkup(buttons)
+
+
+def create_duration_keyboard(idea: str, scheduled_time: datetime) -> InlineKeyboardMarkup:
+    """Create inline keyboard with duration options."""
+    buttons = []
+    row = []
+    for minutes, label in DURATION_OPTIONS:
+        data = json.dumps({
+            "a": "dur",
+            "i": idea[:50],
+            "t": scheduled_time.isoformat(),
+            "d": minutes
+        })
+        row.append(InlineKeyboardButton(label, callback_data=data))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    buttons.append([InlineKeyboardButton("Cancel", callback_data='{"a":"cancel"}')])
+    return InlineKeyboardMarkup(buttons)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -150,7 +270,7 @@ async def add_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    parsed_time = dateparser.parse(time_str)
+    parsed_time = parse_time_robust(time_str)
 
     if not parsed_time:
         await update.message.reply_text(
@@ -160,32 +280,22 @@ async def add_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if parsed_time < datetime.now():
+        # Offer future time suggestions instead of rejecting
+        suggestions = get_future_time_suggestions(parsed_time, time_str)
+        keyboard = create_time_suggestion_keyboard(idea, suggestions)
         await update.message.reply_text(
-            "That time is in the past. Please choose a future time."
+            f"'{time_str}' is in the past. Did you mean:",
+            reply_markup=keyboard
         )
         return
 
-    try:
-        event_id = google_calendar.create_event_for_user(user_id, idea, parsed_time)
-
-        if event_id is None:
-            db.disconnect_google(user_id)
-            await update.message.reply_text(
-                "Your Google Calendar access has expired.\n"
-                "Please use /connect to reconnect."
-            )
-            return
-
-        db.store_event(user_id, event_id, idea, parsed_time)
-
-        formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
-        await update.message.reply_text(f"Added to your calendar for {formatted_time}")
-
-    except Exception as e:
-        logger.error(f"Error creating event: {e}")
-        await update.message.reply_text(
-            "Failed to create calendar event. Try /connect to reconnect."
-        )
+    # Ask for duration
+    keyboard = create_duration_keyboard(idea, parsed_time)
+    formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
+    await update.message.reply_text(
+        f"📅 {idea}\n⏰ {formatted_time}\n\nHow long will this take?",
+        reply_markup=keyboard
+    )
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -231,7 +341,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    parsed_time = dateparser.parse(time_str)
+    parsed_time = parse_time_robust(time_str)
 
     if not parsed_time:
         await update.message.reply_text(
@@ -242,36 +352,23 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if parsed_time < datetime.now():
+        # Offer future time suggestions instead of rejecting
+        suggestions = get_future_time_suggestions(parsed_time, time_str)
+        keyboard = create_time_suggestion_keyboard(idea, suggestions)
         await update.message.reply_text(
             f"I heard: \"{transcript}\"\n\n"
-            "That time is in the past. Please choose a future time."
+            f"'{time_str}' is in the past. Did you mean:",
+            reply_markup=keyboard
         )
         return
 
-    try:
-        event_id = google_calendar.create_event_for_user(user_id, idea, parsed_time)
-
-        if event_id is None:
-            db.disconnect_google(user_id)
-            await update.message.reply_text(
-                "Your Google Calendar access has expired.\n"
-                "Please use /connect to reconnect."
-            )
-            return
-
-        db.store_event(user_id, event_id, idea, parsed_time)
-
-        formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
-        await update.message.reply_text(
-            f"I heard: \"{idea}\" for {time_str}\n\n"
-            f"Added to your calendar for {formatted_time}"
-        )
-
-    except Exception as e:
-        logger.error(f"Error creating event from voice: {e}")
-        await update.message.reply_text(
-            "Failed to create calendar event. Try /connect to reconnect."
-        )
+    # Ask for duration
+    keyboard = create_duration_keyboard(idea, parsed_time)
+    formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
+    await update.message.reply_text(
+        f"I heard: \"{idea}\"\n\n📅 {idea}\n⏰ {formatted_time}\n\nHow long will this take?",
+        reply_markup=keyboard
+    )
 
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -292,8 +389,12 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     idea, time_str = parsed
 
-    # Validate time before doing anything
-    parsed_time = dateparser.parse(time_str)
+    # Filter out casual conversation, questions, past tense
+    if not looks_like_event(idea, text):
+        return
+
+    # Validate time with robust parsing
+    parsed_time = parse_time_robust(time_str)
     if not parsed_time:
         # Couldn't parse time - ignore silently
         return
@@ -316,32 +417,22 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     if parsed_time < datetime.now():
+        # Offer future time suggestions instead of rejecting
+        suggestions = get_future_time_suggestions(parsed_time, time_str)
+        keyboard = create_time_suggestion_keyboard(idea, suggestions)
         await update.message.reply_text(
-            "That time is in the past. Please choose a future time."
+            f"'{time_str}' is in the past. Did you mean:",
+            reply_markup=keyboard
         )
         return
 
-    try:
-        event_id = google_calendar.create_event_for_user(user_id, idea, parsed_time)
-
-        if event_id is None:
-            db.disconnect_google(user_id)
-            await update.message.reply_text(
-                "Your Google Calendar access has expired.\n"
-                "Please use /connect to reconnect."
-            )
-            return
-
-        db.store_event(user_id, event_id, idea, parsed_time)
-
-        formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
-        await update.message.reply_text(f"Added to your calendar for {formatted_time}")
-
-    except Exception as e:
-        logger.error(f"Error creating event: {e}")
-        await update.message.reply_text(
-            "Failed to create calendar event. Try /connect to reconnect."
-        )
+    # Ask for duration
+    keyboard = create_duration_keyboard(idea, parsed_time)
+    formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
+    await update.message.reply_text(
+        f"📅 {idea}\n⏰ {formatted_time}\n\nHow long will this take?",
+        reply_markup=keyboard
+    )
 
 
 async def pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -398,6 +489,80 @@ async def handle_completion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(
         f"Great! You've completed {s['completed']}/{s['total']} ideas this week."
     )
+
+
+async def handle_event_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle callbacks for time selection, duration selection, and cancel."""
+    query = update.callback_query
+    await query.answer()
+
+    try:
+        data = json.loads(query.data)
+    except json.JSONDecodeError:
+        return
+
+    action = data.get('a')
+    user_id = query.from_user.id
+
+    if action == 'cancel':
+        await query.edit_message_text("Cancelled.")
+        return
+
+    if action == 'time':
+        # User selected a time suggestion, now ask for duration
+        idea = data.get('i')
+        scheduled_time = datetime.fromisoformat(data.get('t'))
+
+        keyboard = create_duration_keyboard(idea, scheduled_time)
+        formatted_time = scheduled_time.strftime("%B %d at %I:%M %p")
+        await query.edit_message_text(
+            f"📅 {idea}\n⏰ {formatted_time}\n\nHow long will this take?",
+            reply_markup=keyboard
+        )
+        return
+
+    if action == 'dur':
+        # User selected duration, create the event
+        idea = data.get('i')
+        scheduled_time = datetime.fromisoformat(data.get('t'))
+        duration_minutes = data.get('d')
+
+        if not db.is_google_connected(user_id):
+            await query.edit_message_text(
+                "You need to connect your Google Calendar first!\n"
+                "Use /connect to link your calendar."
+            )
+            return
+
+        try:
+            event_id = google_calendar.create_event_for_user(
+                user_id, idea, scheduled_time, duration_minutes=duration_minutes
+            )
+
+            if event_id is None:
+                db.disconnect_google(user_id)
+                await query.edit_message_text(
+                    "Your Google Calendar access has expired.\n"
+                    "Please use /connect to reconnect."
+                )
+                return
+
+            db.store_event(user_id, event_id, idea, scheduled_time)
+
+            formatted_time = scheduled_time.strftime("%B %d at %I:%M %p")
+            duration_label = next((l for m, l in DURATION_OPTIONS if m == duration_minutes), f"{duration_minutes} min")
+            await query.edit_message_text(
+                f"✅ Added to your calendar!\n\n"
+                f"📅 {idea}\n"
+                f"⏰ {formatted_time}\n"
+                f"⏱ {duration_label}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error creating event: {e}")
+            await query.edit_message_text(
+                "Failed to create calendar event. Try /connect to reconnect."
+            )
 
 
 async def connect_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -488,6 +653,7 @@ def main():
     app.add_handler(CommandHandler("pending", pending))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CallbackQueryHandler(handle_completion, pattern=r'^complete_\d+$'))
+    app.add_handler(CallbackQueryHandler(handle_event_callback, pattern=r'^\{'))  # JSON callbacks
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 

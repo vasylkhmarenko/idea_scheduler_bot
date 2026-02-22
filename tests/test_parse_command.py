@@ -1,7 +1,7 @@
 """Tests for parse_add_command function."""
 
 import pytest
-from main import parse_add_command
+from main import parse_add_command, looks_like_event, parse_time_robust
 
 
 class TestParseAddCommand:
@@ -103,3 +103,83 @@ class TestParseAddCommand:
         assert result is not None
         idea, time_str = result
         assert idea == "Test idea"
+
+
+class TestLooksLikeEvent:
+    """Tests for filtering casual conversation from events."""
+
+    def test_rejects_questions(self):
+        """Should reject messages ending with ?"""
+        assert looks_like_event("What time is it", "What time is it tomorrow?") is False
+        assert looks_like_event("How about", "How about tomorrow?") is False
+
+    def test_rejects_question_words(self):
+        """Should reject messages starting with question words."""
+        assert looks_like_event("is the meeting", "When is the meeting tomorrow") is False
+        assert looks_like_event("are you free", "Are you free tomorrow") is False
+
+    def test_rejects_past_tense(self):
+        """Should reject past tense indicators."""
+        assert looks_like_event("The meeting was", "The meeting was today at 2pm") is False
+        assert looks_like_event("I called him", "I called him yesterday") is False
+        assert looks_like_event("We met last", "We met last Friday") is False
+
+    def test_rejects_casual_phrases(self):
+        """Should reject conversational phrases."""
+        assert looks_like_event("I'll see you", "I'll see you tomorrow") is False
+        assert looks_like_event("See you", "See you Monday") is False
+        assert looks_like_event("Thanks for", "Thanks for yesterday") is False
+
+    def test_rejects_short_ideas(self):
+        """Should reject ideas that are too short."""
+        assert looks_like_event("Hi", "Hi tomorrow") is False
+        assert looks_like_event("OK", "OK Friday") is False
+
+    def test_accepts_valid_events(self):
+        """Should accept legitimate event ideas."""
+        assert looks_like_event("Call dentist", "Call dentist tomorrow 2pm") is True
+        assert looks_like_event("Team meeting", "Team meeting next Monday") is True
+        assert looks_like_event("Submit report", "Submit report in 3 days") is True
+        assert looks_like_event("Buy groceries", "Buy groceries Friday") is True
+
+    def test_accepts_single_word_if_long(self):
+        """Should accept single-word ideas if 8+ characters."""
+        assert looks_like_event("Presentation", "Presentation Friday") is True
+        assert looks_like_event("Interview", "Interview tomorrow") is True
+
+
+class TestParseTimeRobust:
+    """Tests for robust time parsing."""
+
+    def test_parses_tomorrow(self):
+        """Should parse 'tomorrow 2pm'."""
+        result = parse_time_robust("tomorrow 2pm")
+        assert result is not None
+
+    def test_parses_next_monday(self):
+        """Should parse 'next Monday' (dateparser workaround)."""
+        result = parse_time_robust("next Monday 10am")
+        assert result is not None
+
+    def test_parses_next_friday(self):
+        """Should parse 'next Friday'."""
+        result = parse_time_robust("next Friday 2pm")
+        assert result is not None
+
+    def test_parses_in_days(self):
+        """Should parse 'in 3 days'."""
+        result = parse_time_robust("in 3 days")
+        assert result is not None
+
+    def test_returns_none_for_invalid(self):
+        """Should return None for unparseable time."""
+        result = parse_time_robust("blahblah")
+        assert result is None
+
+    def test_prefers_future_dates(self):
+        """Should prefer future dates."""
+        result = parse_time_robust("Monday 10am")
+        assert result is not None
+        # Result should be in the future (or today)
+        from datetime import datetime
+        assert result >= datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
