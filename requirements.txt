@@ -1,7 +1,8 @@
-python-telegram-bot==21.1
+python-telegram-bot[job-queue]>=22.0
 Flask>=3.0.0
 google-auth-oauthlib==1.2.0
 google-api-python-client==2.108.0
+google-cloud-speech>=2.21.0
 python-dotenv==1.0.0
 dateparser==1.1.8
 pytest>=9.0.0
