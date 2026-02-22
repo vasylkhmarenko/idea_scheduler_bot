@@ -10,7 +10,7 @@ import dateparser
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    ContextTypes
+    MessageHandler, filters, ContextTypes
 )
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import time as dt_time
@@ -18,6 +18,7 @@ from datetime import time as dt_time
 import db
 import google_calendar
 import oauth
+import voice
 
 # Load .env from the same directory as this file
 env_path = Path(__file__).parent / '.env'
@@ -78,8 +79,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Welcome back to IdeaScheduler!\n\n"
             "Your Google Calendar is connected.\n\n"
-            "Usage: /add [idea] [time]\n"
-            "Example: /add Film YouTube video tomorrow 2pm\n\n"
+            "Just type your idea with a time:\n"
+            "Film YouTube video tomorrow 2pm\n\n"
             "Type /help for more info."
         )
     else:
@@ -98,12 +99,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command."""
     await update.message.reply_text(
         "IdeaScheduler Bot\n\n"
+        "Quick add (just type):\n"
+        "Write blog post tomorrow 2pm\n"
+        "Call mom next Monday 10am\n\n"
         "Commands:\n"
         "/connect - Connect your Google Calendar\n"
         "/disconnect - Disconnect your calendar\n"
         "/add [idea] [time] - Schedule an idea\n"
         "/pending - View pending ideas\n"
         "/stats - View completion stats\n\n"
+        "Voice messages:\n"
+        "Send a voice message with your idea and time!\n\n"
         "Time formats:\n"
         "- tomorrow 2pm\n"
         "- next Monday 10am\n"
@@ -150,6 +156,162 @@ async def add_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Couldn't understand '{time_str}'.\n"
             "Try: 'tomorrow 2pm' or 'next Monday 10am'"
+        )
+        return
+
+    if parsed_time < datetime.now():
+        await update.message.reply_text(
+            "That time is in the past. Please choose a future time."
+        )
+        return
+
+    try:
+        event_id = google_calendar.create_event_for_user(user_id, idea, parsed_time)
+
+        if event_id is None:
+            db.disconnect_google(user_id)
+            await update.message.reply_text(
+                "Your Google Calendar access has expired.\n"
+                "Please use /connect to reconnect."
+            )
+            return
+
+        db.store_event(user_id, event_id, idea, parsed_time)
+
+        formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
+        await update.message.reply_text(f"Added to your calendar for {formatted_time}")
+
+    except Exception as e:
+        logger.error(f"Error creating event: {e}")
+        await update.message.reply_text(
+            "Failed to create calendar event. Try /connect to reconnect."
+        )
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle voice messages - transcribe and create event."""
+    user_id = update.effective_user.id
+    db.add_user(user_id)
+
+    if not db.is_google_connected(user_id):
+        await update.message.reply_text(
+            "You need to connect your Google Calendar first!\n"
+            "Use /connect to link your calendar."
+        )
+        return
+
+    voice_file = await update.message.voice.get_file()
+    audio_bytes = await voice_file.download_as_bytearray()
+
+    await update.message.reply_text("Transcribing your voice message...")
+
+    transcript = voice.transcribe_voice(bytes(audio_bytes))
+
+    if not transcript:
+        await update.message.reply_text(
+            "Couldn't transcribe your voice message. Please try again or type your idea."
+        )
+        return
+
+    parsed = parse_add_command(transcript)
+
+    if not parsed:
+        await update.message.reply_text(
+            f"I heard: \"{transcript}\"\n\n"
+            "Couldn't parse idea and time. Try saying something like:\n"
+            "\"Write blog post tomorrow 2pm\""
+        )
+        return
+
+    idea, time_str = parsed
+
+    if len(idea) > MAX_IDEA_LENGTH:
+        await update.message.reply_text(
+            f"Idea text too long. Please keep it under {MAX_IDEA_LENGTH} characters."
+        )
+        return
+
+    parsed_time = dateparser.parse(time_str)
+
+    if not parsed_time:
+        await update.message.reply_text(
+            f"I heard: \"{transcript}\"\n\n"
+            f"Couldn't understand the time '{time_str}'.\n"
+            "Try: 'tomorrow 2pm' or 'next Monday 10am'"
+        )
+        return
+
+    if parsed_time < datetime.now():
+        await update.message.reply_text(
+            f"I heard: \"{transcript}\"\n\n"
+            "That time is in the past. Please choose a future time."
+        )
+        return
+
+    try:
+        event_id = google_calendar.create_event_for_user(user_id, idea, parsed_time)
+
+        if event_id is None:
+            db.disconnect_google(user_id)
+            await update.message.reply_text(
+                "Your Google Calendar access has expired.\n"
+                "Please use /connect to reconnect."
+            )
+            return
+
+        db.store_event(user_id, event_id, idea, parsed_time)
+
+        formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
+        await update.message.reply_text(
+            f"I heard: \"{idea}\" for {time_str}\n\n"
+            f"Added to your calendar for {formatted_time}"
+        )
+
+    except Exception as e:
+        logger.error(f"Error creating event from voice: {e}")
+        await update.message.reply_text(
+            "Failed to create calendar event. Try /connect to reconnect."
+        )
+
+
+async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle plain text messages - try to parse as event."""
+    user_id = update.effective_user.id
+    text = update.message.text
+
+    # Skip if it looks like a command
+    if text.startswith('/'):
+        return
+
+    # Try to parse as an event
+    parsed = parse_add_command(text)
+
+    if not parsed:
+        # Not a recognizable event format - ignore silently
+        return
+
+    idea, time_str = parsed
+
+    # Validate time before doing anything
+    parsed_time = dateparser.parse(time_str)
+    if not parsed_time:
+        # Couldn't parse time - ignore silently
+        return
+
+    # From here, it looks like a valid event - check connection
+    db.add_user(user_id)
+
+    if not db.is_google_connected(user_id):
+        await update.message.reply_text(
+            "You need to connect your Google Calendar first!\n"
+            "Use /connect to link your calendar."
+        )
+        return
+
+    # Security: validate input length
+    if len(idea) > MAX_IDEA_LENGTH:
+        await update.message.reply_text(
+            f"Idea text too long. Please keep it under {MAX_IDEA_LENGTH} characters."
         )
         return
 
@@ -326,6 +488,8 @@ def main():
     app.add_handler(CommandHandler("pending", pending))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CallbackQueryHandler(handle_completion, pattern=r'^complete_\d+$'))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     # Schedule daily reminders at 9am UTC using built-in job queue
     app.job_queue.run_daily(send_daily_reminders, time=dt_time(hour=9, minute=0))
