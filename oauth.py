@@ -2,6 +2,7 @@
 
 import os
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta
 from google.oauth2.credentials import Credentials
@@ -9,6 +10,8 @@ from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
 
 import db
+
+logger = logging.getLogger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 CLIENT_SECRETS_FILE = os.getenv('GOOGLE_CLIENT_SECRETS_PATH', 'client_secrets.json')
@@ -95,7 +98,8 @@ def exchange_code_for_tokens(code: str, state: str) -> tuple[int, bool, str]:
         return user_id, True, "Successfully connected Google Calendar!"
 
     except Exception as e:
-        return user_id, False, f"Failed to connect: {str(e)}"
+        logger.error(f"OAuth token exchange failed for user {user_id}: {e}")
+        return user_id, False, "Failed to connect. Please try again."
 
 
 def get_user_credentials(user_id: int) -> Credentials | None:

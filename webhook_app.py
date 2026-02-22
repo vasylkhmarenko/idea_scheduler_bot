@@ -82,7 +82,7 @@ def oauth_callback():
 
     if error:
         logger.error(f"OAuth error: {error}")
-        return render_callback_result(False, f"Authorization failed: {error}")
+        return render_callback_result(False, "Authorization failed. Please try again.")
 
     if not code or not state:
         return render_callback_result(False, "Missing authorization code or state")

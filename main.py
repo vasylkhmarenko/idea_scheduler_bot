@@ -30,6 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+MAX_IDEA_LENGTH = 500  # Security: limit input length
 
 
 def parse_add_command(text: str) -> tuple[str, str] | None:
@@ -135,6 +136,14 @@ async def add_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     idea, time_str = parsed
+
+    # Security: validate input length
+    if len(idea) > MAX_IDEA_LENGTH:
+        await update.message.reply_text(
+            f"Idea text too long. Please keep it under {MAX_IDEA_LENGTH} characters."
+        )
+        return
+
     parsed_time = dateparser.parse(time_str)
 
     if not parsed_time:
@@ -212,7 +221,8 @@ async def handle_completion(update: Update, context: ContextTypes.DEFAULT_TYPE):
     event_db_id = int(data.replace('complete_', ''))
     event = db.get_event_by_id(event_db_id)
 
-    if not event:
+    # Security: verify user owns this event (prevent IDOR)
+    if not event or event['user_id'] != query.from_user.id:
         await query.edit_message_text("Event not found.")
         return
 
