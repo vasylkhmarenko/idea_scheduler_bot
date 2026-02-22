@@ -1,10 +1,11 @@
 """SQLite database operations for IdeaScheduler Bot."""
 
+import os
 import sqlite3
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 
-DATABASE_PATH = "idea_scheduler.db"
+DATABASE_PATH = os.getenv('DATABASE_PATH', 'idea_scheduler.db')
 
 
 @contextmanager
