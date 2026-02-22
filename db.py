@@ -46,6 +46,26 @@ def init_db():
 
         conn.commit()
 
+    # Run migrations for OAuth columns
+    _migrate_add_oauth_columns()
+
+
+def _migrate_add_oauth_columns():
+    """Add OAuth columns to existing users table."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if 'google_refresh_token' not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN google_refresh_token TEXT")
+            cursor.execute("ALTER TABLE users ADD COLUMN google_access_token TEXT")
+            cursor.execute("ALTER TABLE users ADD COLUMN google_token_expiry TIMESTAMP")
+            cursor.execute("ALTER TABLE users ADD COLUMN google_calendar_id TEXT")
+            cursor.execute("ALTER TABLE users ADD COLUMN google_connected_at TIMESTAMP")
+            cursor.execute("ALTER TABLE users ADD COLUMN oauth_state TEXT")
+            conn.commit()
+
 
 def add_user(user_id: int) -> bool:
     """Store new user. Returns True if new user, False if already exists."""
@@ -197,3 +217,107 @@ def get_completion_stats(user_id: int, weeks: int = 1) -> dict:
             'completed': completed,
             'rate': (completed / total * 100) if total > 0 else 0
         }
+
+
+# OAuth Token Management
+
+def store_oauth_state(user_id: int, state: str) -> None:
+    """Store OAuth state for CSRF verification."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET oauth_state = ? WHERE user_id = ?",
+            (state, user_id)
+        )
+        conn.commit()
+
+
+def verify_oauth_state(user_id: int, state: str) -> bool:
+    """Verify OAuth state matches stored value."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT oauth_state FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        return row and row['oauth_state'] == state
+
+
+def store_google_tokens(user_id: int, access_token: str, refresh_token: str,
+                        expiry: datetime, calendar_id: str = None) -> None:
+    """Store Google OAuth tokens for a user."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE users
+            SET google_access_token = ?,
+                google_refresh_token = ?,
+                google_token_expiry = ?,
+                google_calendar_id = ?,
+                google_connected_at = CURRENT_TIMESTAMP,
+                oauth_state = NULL
+            WHERE user_id = ?
+            """,
+            (access_token, refresh_token, expiry, calendar_id or 'primary', user_id)
+        )
+        conn.commit()
+
+
+def get_google_tokens(user_id: int) -> dict | None:
+    """Get stored Google tokens for a user."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT google_access_token, google_refresh_token,
+                   google_token_expiry, google_calendar_id
+            FROM users WHERE user_id = ?
+            """,
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        if row and row['google_refresh_token']:
+            return dict(row)
+        return None
+
+
+def update_access_token(user_id: int, access_token: str, expiry: datetime) -> None:
+    """Update access token after refresh."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE users
+            SET google_access_token = ?, google_token_expiry = ?
+            WHERE user_id = ?
+            """,
+            (access_token, expiry, user_id)
+        )
+        conn.commit()
+
+
+def is_google_connected(user_id: int) -> bool:
+    """Check if user has connected Google Calendar."""
+    tokens = get_google_tokens(user_id)
+    return tokens is not None
+
+
+def disconnect_google(user_id: int) -> None:
+    """Remove Google OAuth tokens (disconnect)."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE users
+            SET google_access_token = NULL,
+                google_refresh_token = NULL,
+                google_token_expiry = NULL,
+                google_calendar_id = NULL,
+                google_connected_at = NULL
+            WHERE user_id = ?
+            """,
+            (user_id,)
+        )
+        conn.commit()

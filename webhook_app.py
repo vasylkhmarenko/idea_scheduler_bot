@@ -5,11 +5,11 @@ import asyncio
 import logging
 from flask import Flask, request
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler
 
 import db
-import google_calendar
+import oauth
 
 load_dotenv()
 
@@ -26,14 +26,14 @@ app = Flask(__name__)
 
 # Telegram application (initialized lazily)
 telegram_app = None
-google_creds = None
 
 
 def get_telegram_app():
     """Get or create the Telegram Application instance."""
     global telegram_app
     if telegram_app is None:
-        from main import start, help_command, add_idea, pending, stats, handle_completion
+        from main import (start, help_command, add_idea, pending, stats,
+                          handle_completion, connect_google, disconnect_google)
 
         telegram_app = (
             Application.builder()
@@ -43,6 +43,8 @@ def get_telegram_app():
 
         telegram_app.add_handler(CommandHandler("start", start))
         telegram_app.add_handler(CommandHandler("help", help_command))
+        telegram_app.add_handler(CommandHandler("connect", connect_google))
+        telegram_app.add_handler(CommandHandler("disconnect", disconnect_google))
         telegram_app.add_handler(CommandHandler("add", add_idea))
         telegram_app.add_handler(CommandHandler("pending", pending))
         telegram_app.add_handler(CommandHandler("stats", stats))
@@ -65,6 +67,103 @@ def webhook():
     except Exception as e:
         logger.error(f"Error processing update: {e}")
         return 'OK', 200  # Return 200 to avoid Telegram retries
+
+
+@app.route('/oauth/callback', methods=['GET'])
+def oauth_callback():
+    """Handle Google OAuth callback."""
+    code = request.args.get('code')
+    state = request.args.get('state')
+    error = request.args.get('error')
+
+    if error:
+        logger.error(f"OAuth error: {error}")
+        return render_callback_result(False, f"Authorization failed: {error}")
+
+    if not code or not state:
+        return render_callback_result(False, "Missing authorization code or state")
+
+    user_id, success, message = oauth.exchange_code_for_tokens(code, state)
+
+    if success:
+        try:
+            asyncio.run(send_connection_success_message(user_id))
+        except Exception as e:
+            logger.error(f"Failed to send Telegram notification: {e}")
+
+    return render_callback_result(success, message)
+
+
+async def send_connection_success_message(user_id: int):
+    """Send a Telegram message confirming successful connection."""
+    bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    await bot.send_message(
+        chat_id=user_id,
+        text=(
+            "Google Calendar connected successfully!\n\n"
+            "You can now use /add to schedule ideas to your calendar.\n"
+            "Example: /add Review project tomorrow 3pm"
+        )
+    )
+
+
+def render_callback_result(success: bool, message: str) -> str:
+    """Render HTML page for OAuth callback result."""
+    status_color = "#4CAF50" if success else "#f44336"
+    icon = "&#10004;" if success else "&#10008;"
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>IdeaScheduler - Calendar Connection</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background: #f5f5f5;
+            }}
+            .container {{
+                text-align: center;
+                padding: 40px;
+                background: white;
+                border-radius: 12px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                max-width: 400px;
+            }}
+            .icon {{
+                font-size: 48px;
+                color: {status_color};
+                margin-bottom: 20px;
+            }}
+            .message {{
+                color: #333;
+                font-size: 18px;
+                margin-bottom: 20px;
+            }}
+            .instruction {{
+                color: #666;
+                font-size: 14px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="icon">{icon}</div>
+            <div class="message">{message}</div>
+            <div class="instruction">
+                {"You can close this window and return to Telegram." if success
+                 else "Please try again from the Telegram bot."}
+            </div>
+        </div>
+    </body>
+    </html>
+    """
 
 
 @app.route('/health', methods=['GET'])

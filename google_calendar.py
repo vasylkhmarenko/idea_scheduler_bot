@@ -80,3 +80,67 @@ def update_event_completion(credentials, event_id: str, completed: bool = True,
 
     service.events().update(calendarId=calendar_id, eventId=event_id, body=event).execute()
     return True
+
+
+# Per-user OAuth functions
+
+def create_event_for_user(user_id: int, idea: str, datetime_obj: datetime,
+                          timezone: str = None) -> str | None:
+    """
+    Create Google Calendar event for a specific user using their OAuth credentials.
+    Returns event_id or None if user not connected.
+    """
+    import oauth
+    import db
+
+    credentials = oauth.get_user_credentials(user_id)
+    if not credentials:
+        return None
+
+    tokens = db.get_google_tokens(user_id)
+    calendar_id = tokens.get('google_calendar_id') or 'primary'
+    timezone = timezone or DEFAULT_TIMEZONE
+
+    service = get_calendar_service(credentials)
+    end_time = datetime_obj + timedelta(hours=1)
+
+    event = {
+        'summary': idea,
+        'start': {
+            'dateTime': datetime_obj.isoformat(),
+            'timeZone': timezone,
+        },
+        'end': {
+            'dateTime': end_time.isoformat(),
+            'timeZone': timezone,
+        },
+        'description': 'Created by IdeaScheduler Bot',
+    }
+
+    created_event = service.events().insert(calendarId=calendar_id, body=event).execute()
+    return created_event['id']
+
+
+def update_event_completion_for_user(user_id: int, event_id: str,
+                                     completed: bool = True) -> bool:
+    """Mark event as completed for a specific user using their OAuth credentials."""
+    import oauth
+    import db
+
+    credentials = oauth.get_user_credentials(user_id)
+    if not credentials:
+        return False
+
+    tokens = db.get_google_tokens(user_id)
+    calendar_id = tokens.get('google_calendar_id') or 'primary'
+
+    service = get_calendar_service(credentials)
+
+    try:
+        event = service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+        status = "Completed" if completed else "Pending"
+        event['description'] = f"{status} - Created by IdeaScheduler Bot"
+        service.events().update(calendarId=calendar_id, eventId=event_id, body=event).execute()
+        return True
+    except Exception:
+        return False

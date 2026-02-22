@@ -16,6 +16,7 @@ from datetime import time as dt_time
 
 import db
 import google_calendar
+import oauth
 
 load_dotenv()
 
@@ -26,7 +27,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-google_creds = None
 
 
 def parse_add_command(text: str) -> tuple[str, str] | None:
@@ -70,13 +70,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     db.add_user(user_id)
 
-    await update.message.reply_text(
-        "Welcome to IdeaScheduler!\n\n"
-        "Capture ideas and schedule them instantly.\n\n"
-        "Usage: /add [idea] [time]\n"
-        "Example: /add Film YouTube video tomorrow 2pm\n\n"
-        "Type /help for more info."
-    )
+    if db.is_google_connected(user_id):
+        await update.message.reply_text(
+            "Welcome back to IdeaScheduler!\n\n"
+            "Your Google Calendar is connected.\n\n"
+            "Usage: /add [idea] [time]\n"
+            "Example: /add Film YouTube video tomorrow 2pm\n\n"
+            "Type /help for more info."
+        )
+    else:
+        await update.message.reply_text(
+            "Welcome to IdeaScheduler!\n\n"
+            "Capture ideas and schedule them to YOUR Google Calendar.\n\n"
+            "First, connect your calendar:\n"
+            "/connect - Link your Google Calendar\n\n"
+            "Then add ideas:\n"
+            "/add [idea] [time]\n\n"
+            "Type /help for more info."
+        )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -84,6 +95,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "IdeaScheduler Bot\n\n"
         "Commands:\n"
+        "/connect - Connect your Google Calendar\n"
+        "/disconnect - Disconnect your calendar\n"
         "/add [idea] [time] - Schedule an idea\n"
         "/pending - View pending ideas\n"
         "/stats - View completion stats\n\n"
@@ -100,6 +113,13 @@ async def add_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /add command."""
     user_id = update.effective_user.id
     db.add_user(user_id)
+
+    if not db.is_google_connected(user_id):
+        await update.message.reply_text(
+            "You need to connect your Google Calendar first!\n"
+            "Use /connect to link your calendar."
+        )
+        return
 
     text = update.message.text
     parsed = parse_add_command(text)
@@ -128,20 +148,25 @@ async def add_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        global google_creds
-        if google_creds is None:
-            google_creds = google_calendar.load_credentials()
+        event_id = google_calendar.create_event_for_user(user_id, idea, parsed_time)
 
-        event_id = google_calendar.create_event(google_creds, idea, parsed_time)
+        if event_id is None:
+            db.disconnect_google(user_id)
+            await update.message.reply_text(
+                "Your Google Calendar access has expired.\n"
+                "Please use /connect to reconnect."
+            )
+            return
+
         db.store_event(user_id, event_id, idea, parsed_time)
 
         formatted_time = parsed_time.strftime("%B %d at %I:%M %p")
-        await update.message.reply_text(f"Added to calendar for {formatted_time}")
+        await update.message.reply_text(f"Added to your calendar for {formatted_time}")
 
     except Exception as e:
         logger.error(f"Error creating event: {e}")
         await update.message.reply_text(
-            "Failed to create calendar event. Check your Google credentials."
+            "Failed to create calendar event. Try /connect to reconnect."
         )
 
 
@@ -190,19 +215,63 @@ async def handle_completion(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db.mark_event_complete(event_db_id)
 
-    try:
-        global google_creds
-        if google_creds is None:
-            google_creds = google_calendar.load_credentials()
-        google_calendar.update_event_completion(google_creds, event['event_id'])
-    except Exception as e:
-        logger.error(f"Error updating calendar: {e}")
-
     user_id = event['user_id']
+    google_calendar.update_event_completion_for_user(user_id, event['event_id'])
+
     s = db.get_completion_stats(user_id)
 
     await query.edit_message_text(
         f"Great! You've completed {s['completed']}/{s['total']} ideas this week."
+    )
+
+
+async def connect_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /connect command - Start Google OAuth flow."""
+    user_id = update.effective_user.id
+    db.add_user(user_id)
+
+    if db.is_google_connected(user_id):
+        await update.message.reply_text(
+            "Your Google Calendar is already connected!\n"
+            "Use /disconnect first if you want to reconnect with a different account."
+        )
+        return
+
+    try:
+        auth_url = oauth.get_authorization_url(user_id)
+
+        await update.message.reply_text(
+            "To connect your Google Calendar, click the link below:\n\n"
+            f"{auth_url}\n\n"
+            "After authorizing, you'll be redirected and your calendar will be connected."
+        )
+    except FileNotFoundError:
+        logger.error("OAuth client secrets file not found")
+        await update.message.reply_text(
+            "OAuth not configured. Please contact the bot administrator."
+        )
+    except Exception as e:
+        logger.error(f"Error generating OAuth URL: {e}")
+        await update.message.reply_text(
+            "An error occurred. Please try again later."
+        )
+
+
+async def disconnect_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /disconnect command - Remove Google Calendar connection."""
+    user_id = update.effective_user.id
+
+    if not db.is_google_connected(user_id):
+        await update.message.reply_text(
+            "You don't have a Google Calendar connected.\n"
+            "Use /connect to connect one."
+        )
+        return
+
+    db.disconnect_google(user_id)
+    await update.message.reply_text(
+        "Google Calendar disconnected.\n"
+        "Use /connect to connect a new account."
     )
 
 
@@ -238,6 +307,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("connect", connect_google))
+    app.add_handler(CommandHandler("disconnect", disconnect_google))
     app.add_handler(CommandHandler("add", add_idea))
     app.add_handler(CommandHandler("pending", pending))
     app.add_handler(CommandHandler("stats", stats))
