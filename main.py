@@ -183,11 +183,12 @@ def create_time_suggestion_keyboard(idea: str, suggestions: list[tuple[datetime,
     """Create inline keyboard with time suggestions."""
     buttons = []
     for dt, label in suggestions:
-        # Store idea and datetime in callback data as JSON (limit idea to fit 64 byte limit)
-        data = json.dumps({"a": "t", "i": idea[:30], "t": dt.strftime("%Y%m%d%H%M")})
+        # Compact format to fit 64 byte limit: t|timestamp|idea (max 15 chars)
+        ts = int(dt.timestamp())
+        data = f"t|{ts}|{idea[:20]}"
         buttons.append([InlineKeyboardButton(label, callback_data=data)])
 
-    buttons.append([InlineKeyboardButton("Cancel", callback_data='{"a":"c"}')])
+    buttons.append([InlineKeyboardButton("Cancel", callback_data="x")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -195,14 +196,10 @@ def create_duration_keyboard(idea: str, scheduled_time: datetime) -> InlineKeybo
     """Create inline keyboard with duration options."""
     buttons = []
     row = []
+    ts = int(scheduled_time.timestamp())
     for minutes, label in DURATION_OPTIONS:
-        # Compact format to fit 64 byte limit: a=action, i=idea, t=time, d=duration
-        data = json.dumps({
-            "a": "d",
-            "i": idea[:30],
-            "t": scheduled_time.strftime("%Y%m%d%H%M"),
-            "d": minutes
-        })
+        # Compact format: d|timestamp|duration|idea (max 15 chars for idea)
+        data = f"d|{ts}|{minutes}|{idea[:15]}"
         row.append(InlineKeyboardButton(label, callback_data=data))
         if len(row) == 2:
             buttons.append(row)
@@ -210,7 +207,7 @@ def create_duration_keyboard(idea: str, scheduled_time: datetime) -> InlineKeybo
     if row:
         buttons.append(row)
 
-    buttons.append([InlineKeyboardButton("Cancel", callback_data='{"a":"c"}')])
+    buttons.append([InlineKeyboardButton("Cancel", callback_data="x")])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -521,27 +518,26 @@ async def handle_event_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
 
-    try:
-        data = json.loads(query.data)
-    except json.JSONDecodeError:
-        return
-
-    action = data.get('a')
+    callback_data = query.data
     user_id = query.from_user.id
 
-    if action == 'c' or action == 'cancel':
+    # Cancel action
+    if callback_data == 'x':
         await query.edit_message_text("Cancelled.")
         return
 
-    if action == 't' or action == 'time':
-        # User selected a time suggestion, now ask for duration
-        idea = data.get('i')
-        time_str = data.get('t')
-        # Parse compact time format (YYYYMMDDHHmm) or isoformat
-        if len(time_str) == 12 and time_str.isdigit():
-            scheduled_time = datetime.strptime(time_str, "%Y%m%d%H%M")
-        else:
-            scheduled_time = datetime.fromisoformat(time_str)
+    # Parse pipe-delimited format: action|timestamp|...|idea
+    parts = callback_data.split('|')
+    if len(parts) < 3:
+        return
+
+    action = parts[0]
+
+    if action == 't':
+        # Time selection: t|timestamp|idea
+        timestamp = int(parts[1])
+        idea = parts[2] if len(parts) > 2 else ""
+        scheduled_time = datetime.fromtimestamp(timestamp)
 
         keyboard = create_duration_keyboard(idea, scheduled_time)
         formatted_time = scheduled_time.strftime("%B %d at %I:%M %p")
@@ -551,16 +547,12 @@ async def handle_event_callback(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return
 
-    if action == 'd' or action == 'dur':
-        # User selected duration, create the event
-        idea = data.get('i')
-        time_str = data.get('t')
-        # Parse compact time format (YYYYMMDDHHmm) or isoformat
-        if len(time_str) == 12 and time_str.isdigit():
-            scheduled_time = datetime.strptime(time_str, "%Y%m%d%H%M")
-        else:
-            scheduled_time = datetime.fromisoformat(time_str)
-        duration_minutes = data.get('d')
+    if action == 'd':
+        # Duration selection: d|timestamp|duration|idea
+        timestamp = int(parts[1])
+        duration_minutes = int(parts[2])
+        idea = parts[3] if len(parts) > 3 else ""
+        scheduled_time = datetime.fromtimestamp(timestamp)
 
         if not db.is_google_connected(user_id):
             await query.edit_message_text(
