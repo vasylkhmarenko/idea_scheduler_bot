@@ -247,6 +247,12 @@ def health():
     return 'OK', 200
 
 
+@app.route('/version', methods=['GET'])
+def version():
+    """Version check to verify deployment."""
+    return 'v3-debug', 200
+
+
 @app.route('/debug/user/<int:user_id>', methods=['GET'])
 def debug_user(user_id: int):
     """Debug endpoint to check user state in database."""
