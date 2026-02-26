@@ -21,6 +21,7 @@ import db
 import google_calendar
 import oauth
 import voice
+import ai_parser
 
 # Load .env from the same directory as this file
 env_path = Path(__file__).parent / '.env'
@@ -68,6 +69,27 @@ def parse_add_command(text: str) -> tuple[str, str] | None:
             if parsed:
                 idea = ' '.join(words[:i])
                 return (idea, time_str)
+
+    return None
+
+
+def smart_parse(text: str, user_id: int = None) -> tuple[str, str] | None:
+    """
+    Parse text using cascading fallback: regex first, then AI.
+
+    Returns (idea, time_str) or None if unparseable.
+    """
+    # Try regex parsing first (fast, free)
+    result = parse_add_command(text)
+    if result:
+        return result
+
+    # Fall back to AI parsing if available
+    user_tz = db.get_user_timezone(user_id) if user_id else "UTC"
+    ai_result = ai_parser.parse_with_ai(text, user_tz)
+    if ai_result:
+        logger.info(f"AI parser succeeded (confidence: {ai_result['confidence']:.2f})")
+        return (ai_result['idea'], ai_result['time_str'])
 
     return None
 
@@ -254,7 +276,7 @@ async def add_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = update.message.text
-    parsed = parse_add_command(text)
+    parsed = smart_parse(text, user_id)
 
     if not parsed:
         await update.message.reply_text(
@@ -325,7 +347,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    parsed = parse_add_command(transcript)
+    parsed = smart_parse(transcript, user_id)
 
     if not parsed:
         await update.message.reply_text(
@@ -382,8 +404,8 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text.startswith('/'):
         return
 
-    # Try to parse as an event
-    parsed = parse_add_command(text)
+    # Try to parse as an event (regex first, AI fallback)
+    parsed = smart_parse(text, user_id)
 
     if not parsed:
         # Not a recognizable event format - ignore silently
