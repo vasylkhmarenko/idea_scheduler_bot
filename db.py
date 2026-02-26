@@ -5,8 +5,11 @@ import hmac
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
+from pathlib import Path
 
-DATABASE_PATH = os.getenv('DATABASE_PATH', 'idea_scheduler.db')
+# Use absolute path to ensure both bot and webhook app use same database
+_DEFAULT_DB_PATH = str(Path(__file__).parent / 'idea_scheduler.db')
+DATABASE_PATH = os.getenv('DATABASE_PATH', _DEFAULT_DB_PATH)
 DEFAULT_TIMEZONE = 'Europe/Kyiv'
 
 
