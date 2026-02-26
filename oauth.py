@@ -67,13 +67,23 @@ def exchange_code_for_tokens(code: str, state: str) -> tuple[int, bool, str]:
     Exchange authorization code for tokens.
     Returns: (user_id, success, message)
     """
+    logger.info(f"OAuth callback received with state: {state[:50]}...")
+
     parsed = parse_oauth_state(state)
     if not parsed:
+        logger.error(f"Failed to parse state: {state}")
         return 0, False, "Invalid state parameter"
 
     user_id, _ = parsed
+    logger.info(f"Parsed user_id: {user_id}")
+
+    # Debug: Check what's stored in database
+    stored = db.get_stored_oauth_state(user_id)
+    logger.info(f"Stored state for user {user_id}: {stored[:50] if stored else 'None'}...")
+    logger.info(f"Database path: {db.DATABASE_PATH}")
 
     if not db.verify_oauth_state(user_id, state):
+        logger.error(f"State verification failed for user {user_id}")
         return user_id, False, "State verification failed"
 
     try:

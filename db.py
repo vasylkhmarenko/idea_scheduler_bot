@@ -256,13 +256,31 @@ def get_completion_stats(user_id: int, weeks: int = 1) -> dict:
 
 def store_oauth_state(user_id: int, state: str) -> None:
     """Store OAuth state for CSRF verification."""
+    import logging
+    logger = logging.getLogger(__name__)
+
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE users SET oauth_state = ? WHERE user_id = ?",
             (state, user_id)
         )
+        rows_affected = cursor.rowcount
         conn.commit()
+        logger.info(f"Stored OAuth state for user {user_id}: {state[:30]}... (rows affected: {rows_affected})")
+        logger.info(f"Database path: {DATABASE_PATH}")
+
+
+def get_stored_oauth_state(user_id: int) -> str | None:
+    """Get stored OAuth state for debugging."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT oauth_state FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        return row['oauth_state'] if row else None
 
 
 def verify_oauth_state(user_id: int, state: str) -> bool:
