@@ -273,6 +273,17 @@ def debug_user(user_id: int):
     }, indent=2, default=str), 200, {'Content-Type': 'application/json'}
 
 
+@app.route('/debug/reset/<int:user_id>', methods=['GET'])
+def reset_user(user_id: int):
+    """Delete user from database to start fresh."""
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM events WHERE user_id = ?", (user_id,))
+        cursor.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+        conn.commit()
+    return f"User {user_id} deleted. Now try /start in Telegram.", 200
+
+
 @app.route('/', methods=['GET'])
 def index():
     """Root endpoint."""
