@@ -247,6 +247,32 @@ def health():
     return 'OK', 200
 
 
+@app.route('/debug/user/<int:user_id>', methods=['GET'])
+def debug_user(user_id: int):
+    """Debug endpoint to check user state in database."""
+    import json
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        row = cursor.fetchone()
+        if row:
+            user_data = dict(row)
+            # Mask sensitive tokens
+            if user_data.get('google_access_token'):
+                user_data['google_access_token'] = user_data['google_access_token'][:20] + '...'
+            if user_data.get('google_refresh_token'):
+                user_data['google_refresh_token'] = user_data['google_refresh_token'][:20] + '...'
+            if user_data.get('oauth_state'):
+                user_data['oauth_state'] = user_data['oauth_state'][:50] + '...'
+        else:
+            user_data = None
+    return json.dumps({
+        'database_path': db.DATABASE_PATH,
+        'user_exists': user_data is not None,
+        'user_data': user_data
+    }, indent=2, default=str), 200, {'Content-Type': 'application/json'}
+
+
 @app.route('/', methods=['GET'])
 def index():
     """Root endpoint."""
