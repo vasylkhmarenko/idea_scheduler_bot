@@ -261,6 +261,12 @@ def store_oauth_state(user_id: int, state: str) -> None:
 
     with get_connection() as conn:
         cursor = conn.cursor()
+        # First ensure user exists
+        cursor.execute(
+            "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
+            (user_id,)
+        )
+        # Then update the state
         cursor.execute(
             "UPDATE users SET oauth_state = ? WHERE user_id = ?",
             (state, user_id)
@@ -268,7 +274,8 @@ def store_oauth_state(user_id: int, state: str) -> None:
         rows_affected = cursor.rowcount
         conn.commit()
         logger.info(f"Stored OAuth state for user {user_id}: {state[:30]}... (rows affected: {rows_affected})")
-        logger.info(f"Database path: {DATABASE_PATH}")
+        if rows_affected == 0:
+            logger.error(f"CRITICAL: Failed to store OAuth state - user {user_id} not found even after INSERT")
 
 
 def get_stored_oauth_state(user_id: int) -> str | None:
