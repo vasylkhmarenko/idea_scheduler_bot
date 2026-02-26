@@ -17,6 +17,10 @@ git pull origin main
 echo "Installing dependencies..."
 pip install -r requirements.txt --user
 
+# Download spaCy model for smart parsing
+echo "Downloading spaCy model..."
+python -m spacy download en_core_web_sm --user
+
 # Touch WSGI file to reload (PythonAnywhere specific)
 echo "Reloading web app..."
 touch /var/www/vasylkhmarenko_pythonanywhere_com_wsgi.py
