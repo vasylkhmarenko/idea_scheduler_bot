@@ -3,16 +3,35 @@
 import os
 import hmac
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'idea_scheduler.db')
+DEFAULT_TIMEZONE = 'Europe/Kyiv'
+
+
+# Register datetime adapters/converters for Python 3.12+ compatibility
+def _adapt_datetime(dt: datetime) -> str:
+    """Convert datetime to ISO format string for SQLite storage."""
+    return dt.isoformat()
+
+
+def _convert_datetime(data: bytes) -> datetime:
+    """Convert ISO format string from SQLite to datetime."""
+    return datetime.fromisoformat(data.decode())
+
+
+sqlite3.register_adapter(datetime, _adapt_datetime)
+sqlite3.register_converter("TIMESTAMP", _convert_datetime)
 
 
 @contextmanager
 def get_connection():
     """Context manager for database connections."""
-    conn = sqlite3.connect(DATABASE_PATH)
+    conn = sqlite3.connect(
+        DATABASE_PATH,
+        detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES
+    )
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -50,6 +69,7 @@ def init_db():
     # Run migrations
     _migrate_add_oauth_columns()
     _migrate_add_indexes()
+    _migrate_add_timezone_column()
 
 
 def _migrate_add_oauth_columns():
@@ -89,6 +109,20 @@ def _migrate_add_indexes():
             ON events(completed, scheduled_time)
         """)
         conn.commit()
+
+
+def _migrate_add_timezone_column():
+    """Add timezone column to users table."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if 'timezone' not in columns:
+            cursor.execute(
+                f"ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT '{DEFAULT_TIMEZONE}'"
+            )
+            conn.commit()
 
 
 def add_user(user_id: int) -> bool:
@@ -320,3 +354,31 @@ def disconnect_google(user_id: int) -> None:
             (user_id,)
         )
         conn.commit()
+
+
+# Timezone Management
+
+def get_user_timezone(user_id: int) -> str:
+    """Get user's timezone. Returns default if not set."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT timezone FROM users WHERE user_id = ?",
+            (user_id,)
+        )
+        row = cursor.fetchone()
+        if row and row['timezone']:
+            return row['timezone']
+        return DEFAULT_TIMEZONE
+
+
+def set_user_timezone(user_id: int, tz: str) -> bool:
+    """Set user's timezone. Returns True if updated."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET timezone = ? WHERE user_id = ?",
+            (tz, user_id)
+        )
+        conn.commit()
+        return cursor.rowcount > 0

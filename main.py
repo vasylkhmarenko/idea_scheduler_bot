@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 import json
+from zoneinfo import ZoneInfo, available_timezones
 from dotenv import load_dotenv
 import dateparser
 from telegram import Update
@@ -225,6 +226,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Commands:\n"
         "/connect - Connect your Google Calendar\n"
         "/disconnect - Disconnect your calendar\n"
+        "/timezone - View/set your timezone\n"
         "/add [idea] [time] - Schedule an idea\n"
         "/pending - View pending ideas\n"
         "/stats - View completion stats\n\n"
@@ -615,6 +617,46 @@ async def disconnect_google(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def set_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /timezone command - View or set user timezone."""
+    user_id = update.effective_user.id
+    db.add_user(user_id)
+
+    # Get arguments (timezone name)
+    args = context.args
+
+    if not args:
+        # Show current timezone
+        current_tz = db.get_user_timezone(user_id)
+        await update.message.reply_text(
+            f"Your current timezone: {current_tz}\n\n"
+            "To change it, use:\n"
+            "/timezone Europe/London\n"
+            "/timezone America/New_York\n"
+            "/timezone Asia/Tokyo"
+        )
+        return
+
+    tz_name = args[0]
+
+    # Validate timezone
+    if tz_name not in available_timezones():
+        await update.message.reply_text(
+            f"Invalid timezone: {tz_name}\n\n"
+            "Use a valid timezone like:\n"
+            "Europe/London, America/New_York, Asia/Tokyo\n\n"
+            "See: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
+        )
+        return
+
+    # Set timezone
+    db.set_user_timezone(user_id, tz_name)
+    await update.message.reply_text(
+        f"Timezone set to: {tz_name}\n\n"
+        "All your events will now use this timezone."
+    )
+
+
 async def send_daily_reminders(context: ContextTypes.DEFAULT_TYPE):
     """Send daily reminders for pending events."""
     events_by_user = db.get_all_pending_events_by_user()
@@ -649,6 +691,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("connect", connect_google))
     app.add_handler(CommandHandler("disconnect", disconnect_google))
+    app.add_handler(CommandHandler("timezone", set_timezone))
     app.add_handler(CommandHandler("add", add_idea))
     app.add_handler(CommandHandler("pending", pending))
     app.add_handler(CommandHandler("stats", stats))

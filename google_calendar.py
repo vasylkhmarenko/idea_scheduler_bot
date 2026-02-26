@@ -1,10 +1,7 @@
 """Google Calendar API wrapper for IdeaScheduler Bot."""
 
-import os
 from datetime import datetime, timedelta
 from googleapiclient.discovery import build
-
-DEFAULT_TIMEZONE = os.getenv('TIMEZONE', 'Europe/Kyiv')
 
 
 def _get_calendar_service(credentials):
@@ -29,7 +26,8 @@ def create_event_for_user(user_id: int, idea: str, datetime_obj: datetime,
 
     tokens = db.get_google_tokens(user_id)
     calendar_id = tokens.get('google_calendar_id') or 'primary'
-    timezone = timezone or DEFAULT_TIMEZONE
+    # Use user's timezone from database if not explicitly provided
+    timezone = timezone or db.get_user_timezone(user_id)
 
     # Clamp duration to reasonable range (15 min to 8 hours)
     duration_minutes = max(15, min(480, duration_minutes))

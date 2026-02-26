@@ -234,3 +234,37 @@ class TestGoogleTokens:
 
         tokens = db.get_google_tokens(sample_user_id)
         assert tokens['google_access_token'] == "new_access"
+
+
+class TestTimezone:
+    """Tests for timezone management."""
+
+    def test_get_default_timezone(self, temp_db, sample_user_id):
+        """Should return default timezone for new user."""
+        db.add_user(sample_user_id)
+        tz = db.get_user_timezone(sample_user_id)
+        assert tz == db.DEFAULT_TIMEZONE
+
+    def test_set_and_get_timezone(self, temp_db, sample_user_id):
+        """Should store and retrieve user timezone."""
+        db.add_user(sample_user_id)
+        db.set_user_timezone(sample_user_id, "America/New_York")
+
+        tz = db.get_user_timezone(sample_user_id)
+        assert tz == "America/New_York"
+
+    def test_set_timezone_returns_true(self, temp_db, sample_user_id):
+        """Should return True when timezone is set."""
+        db.add_user(sample_user_id)
+        result = db.set_user_timezone(sample_user_id, "Europe/London")
+        assert result is True
+
+    def test_set_timezone_nonexistent_user(self, temp_db):
+        """Should return False for non-existent user."""
+        result = db.set_user_timezone(99999, "Europe/London")
+        assert result is False
+
+    def test_get_timezone_nonexistent_user(self, temp_db):
+        """Should return default timezone for non-existent user."""
+        tz = db.get_user_timezone(99999)
+        assert tz == db.DEFAULT_TIMEZONE
